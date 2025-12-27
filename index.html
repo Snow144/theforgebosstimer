@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Forge Boss Timer (Persistent)</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; display: grid; place-items: center; height: 100vh; background: #0b0f14; color: #e8eef6; }
+    .card { background: #121926; padding: 24px; border-radius: 16px; width: min(620px, 92vw); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    h1 { margin: 0 0 10px; font-size: 18px; opacity: .9; }
+    .time { font-variant-numeric: tabular-nums; font-size: 64px; font-weight: 800; letter-spacing: 1px; margin: 10px 0 8px; }
+    .sub { opacity: .82; margin: 0 0 16px; line-height: 1.35; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button, input { border-radius: 12px; border: 1px solid #253246; background: #0f1623; color: #e8eef6; padding: 10px 12px; font-size: 14px; }
+    button { cursor: pointer; }
+    button:hover { border-color: #3a5072; }
+    input { width: 160px; }
+    .pill { padding: 6px 10px; border-radius: 999px; background: rgba(120,170,255,.12); border: 1px solid rgba(120,170,255,.25); font-size: 12px; }
+    .warn { background: rgba(255,120,120,.12); border-color: rgba(255,120,120,.25); }
+    .ok { background: rgba(120,255,170,.12); border-color: rgba(120,255,170,.25); }
+    .tiny { font-size: 12px; opacity: .75; margin-top: 12px; }
+    .divider { height: 1px; background: rgba(255,255,255,.08); margin: 14px 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>The Forge — Boss Timer</h1>
+
+    <div class="time" id="display">00:00</div>
+    <p class="sub" id="status">Loading…</p>
+
+    <div class="row" style="margin-bottom: 10px;">
+      <span class="pill" id="phasePill">phase</span>
+      <span class="pill" id="nextPill">next</span>
+      <span class="pill ok" id="persistPill">persistent: on</span>
+    </div>
+
+    <div class="row">
+      <button id="startBtn">Start</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="resetBtn">Reset to 1:00:00</button>
+      <input id="setInput" placeholder="mm:ss or hh:mm:ss" />
+      <button id="setBtn">Set</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="row">
+      <button id="spawnNowBtn">Boss spawned NOW (calibrate)</button>
+      <button id="syncHourBtn">Sync to next top-of-hour</button>
+      <button id="clearBtn">Clear saved sync</button>
+    </div>
+
+    <p class="tiny">
+      • If the boss is not tied to your PC clock, click <b>Boss spawned NOW</b> once when it spawns. After that, it stays right every time you open it.<br/>
+      • If the boss spawns exactly on the hour (e.g., 13:00, 14:00…), use <b>Sync to next top-of-hour</b>.
+    </p>
+  </div>
+
+<script>
+(() => {
+  // ---- CONFIG ----
+  const FULL_CYCLE_MS = 60 * 60 * 1000;        // 1 hour
+  const DEFAULT_REMAINING_MS = 17 * 60 * 1000; // start at 17 minutes if no saved sync
+
+  const STORAGE_KEY = "forgeBoss_nextBossAt_v1";
+
+  const DISPLAY = document.getElementById("display");
+  const STATUS  = document.getElementById("status");
+  const PHASE   = document.getElementById("phasePill");
+  const NEXT    = document.getElementById("nextPill");
+
+  const startBtn    = document.getElementById("startBtn");
+  const pauseBtn    = document.getElementById("pauseBtn");
+  const resetBtn    = document.getElementById("resetBtn");
+  const setBtn      = document.getElementById("setBtn");
+  const setInput    = document.getElementById("setInput");
+  const spawnNowBtn = document.getElementById("spawnNowBtn");
+  const syncHourBtn = document.getElementById("syncHourBtn");
+  const clearBtn    = document.getElementById("clearBtn");
+
+  let running = true;        // auto-start
+  let timerId = null;        // interval id
+  let bossFlashUntil = 0;    // ms timestamp (Date.now based)
+  let nextBossAt = null;     // ms timestamp (Date.now based)
+
+  function saveNextBossAt(ts) {
+    nextBossAt = ts;
+    localStorage.setItem(STORAGE_KEY, String(ts));
+  }
+
+  function loadNextBossAt() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const ts = Number(raw);
+    return Number.isFinite(ts) ? ts : null;
+  }
+
+  function clearSaved() {
+    localStorage.removeItem(STORAGE_KEY);
+    nextBossAt = null;
+  }
+
+  function fmt(ms) {
+    ms = Math.max(0, Math.floor(ms));
+    const totalSec = Math.floor(ms / 1000);
+    const s = totalSec % 60;
+    const m = Math.floor(totalSec / 60) % 60;
+    const h = Math.floor(totalSec / 3600);
+    const pad = (n) => String(n).padStart(2, "0");
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  }
+
+  function parseTime(str) {
+    const t = str.trim();
+    if (!t) return null;
+    const parts = t.split(":").map(p => p.trim());
+    if (parts.some(p => p === "" || isNaN(p))) return null;
+
+    let h = 0, m = 0, s = 0;
+    if (parts.length === 2) {
+      m = Number(parts[0]); s = Number(parts[1]);
+      if (s >= 60 || m < 0 || s < 0) return null;
+    } else if (parts.length === 3) {
+      h = Number(parts[0]); m = Number(parts[1]); s = Number(parts[2]);
+      if (m >= 60 || s >= 60 || h < 0 || m < 0 || s < 0) return null;
+    } else {
+      return null;
+    }
+    return ((h * 3600) + (m * 60) + s) * 1000;
+  }
+
+  function fastForwardIfNeeded() {
+    // If nextBossAt is in the past, jump forward by 1h steps until it's in the future.
+    if (nextBossAt == null) return;
+    const now = Date.now();
+    if (nextBossAt > now) return;
+
+    // Move forward enough cycles to be ahead of now (handles long offline)
+    const diff = now - nextBossAt;
+    const cycles = Math.floor(diff / FULL_CYCLE_MS) + 1;
+    nextBossAt += cycles * FULL_CYCLE_MS;
+    saveNextBossAt(nextBossAt);
+  }
+
+  function getRemainingMs() {
+    if (nextBossAt == null) return DEFAULT_REMAINING_MS;
+    return Math.max(0, nextBossAt - Date.now());
+  }
+
+  function updateUI() {
+    const remainingMs = getRemainingMs();
+    DISPLAY.textContent = fmt(remainingMs);
+
+    const now = Date.now();
+    const inBossFlash = now < bossFlashUntil;
+
+    if (inBossFlash) {
+      STATUS.textContent = "BOSS SPAWNED — next cycle scheduled.";
+      PHASE.textContent = "BOSS";
+      PHASE.classList.add("warn");
+    } else {
+      STATUS.textContent = running ? "Counting down (persistent)..." : "Paused";
+      PHASE.textContent = "COUNTDOWN";
+      PHASE.classList.remove("warn");
+    }
+
+    NEXT.textContent = (nextBossAt == null)
+      ? "no sync saved (starts from 17:00)"
+      : ("next boss at: " + new Date(nextBossAt).toLocaleTimeString());
+  }
+
+  function onBossSpawn() {
+    // Boss happened -> schedule next in 1 hour
+    bossFlashUntil = Date.now() + 3500;
+    saveNextBossAt(Date.now() + FULL_CYCLE_MS);
+  }
+
+  function tick() {
+    if (!running) return;
+
+    // Make sure saved nextBossAt is in future
+    fastForwardIfNeeded();
+
+    if (nextBossAt != null && Date.now() >= nextBossAt) {
+      onBossSpawn();
+    }
+
+    updateUI();
+  }
+
+  function start() {
+    running = true;
+    updateUI();
+  }
+
+  function pause() {
+    running = false;
+    updateUI();
+  }
+
+  function setRemaining(ms) {
+    // Set "time left" from now and persist it.
+    saveNextBossAt(Date.now() + Math.max(0, ms));
+    updateUI();
+  }
+
+  function resetFull() {
+    saveNextBossAt(Date.now() + FULL_CYCLE_MS);
+    bossFlashUntil = 0;
+    updateUI();
+  }
+
+  function calibrateBossSpawnNow() {
+    // You press this exactly when boss spawns: next boss = now + 1h
+    bossFlashUntil = Date.now() + 3500;
+    saveNextBossAt(Date.now() + FULL_CYCLE_MS);
+    updateUI();
+  }
+
+  function syncToNextTopOfHour() {
+    // If boss spawns exactly at the top of each hour, this makes it correct immediately.
+    const d = new Date();
+    d.setMinutes(0, 0, 0);          // this hour :00:00.000
+    const thisHour = d.getTime();
+    const nextHour = thisHour + FULL_CYCLE_MS;
+    saveNextBossAt(nextHour);
+    updateUI();
+  }
+
+  // ---- UI hookups ----
+  startBtn.onclick = start;
+  pauseBtn.onclick = pause;
+  resetBtn.onclick = resetFull;
+
+  setBtn.onclick = () => {
+    const ms = parseTime(setInput.value);
+    if (ms == null) {
+      STATUS.textContent = "Invalid time. Use mm:ss (17:00) or hh:mm:ss (1:00:00).";
+      return;
+    }
+    setRemaining(ms);
+  };
+
+  spawnNowBtn.onclick = calibrateBossSpawnNow;
+  syncHourBtn.onclick = syncToNextTopOfHour;
+
+  clearBtn.onclick = () => {
+    clearSaved();
+    // fall back to default 17:00 starting point
+    updateUI();
+  };
+
+  // ---- Init ----
+  const saved = loadNextBossAt();
+  if (saved != null) {
+    nextBossAt = saved;
+    fastForwardIfNeeded();
+  } else {
+    // no saved sync -> start from "17 minutes left" (non-persistent until you set/calibrate)
+    nextBossAt = Date.now() + DEFAULT_REMAINING_MS;
+    saveNextBossAt(nextBossAt); // make it persistent immediately
+  }
+
+  // Run tick loop
+  updateUI();
+  timerId = setInterval(tick, 200); // smooth enough, low CPU
+})();
+</script>
+</body>
+</html>

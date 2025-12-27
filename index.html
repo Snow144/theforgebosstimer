@@ -60,8 +60,8 @@
 <script>
 (() => {
   // ---- CONFIG ----
-  const FULL_CYCLE_MS = 60 * 60 * 1000;        // 1 hour
-  const DEFAULT_REMAINING_MS = 42 * 60 * 1000; // start at 17 minutes if no saved sync
+  const FULL_CYCLE_MS = 60 * 60 * 1000; // 1 hour
+  const DEFAULT_REMAINING_MS = 38 * 1000; // start at 38 seconds if no saved sync
 
   const STORAGE_KEY = "forgeBoss_nextBossAt_v1";
 
@@ -79,10 +79,9 @@
   const syncHourBtn = document.getElementById("syncHourBtn");
   const clearBtn    = document.getElementById("clearBtn");
 
-  let running = true;        // auto-start
-  let timerId = null;        // interval id
-  let bossFlashUntil = 0;    // ms timestamp (Date.now based)
-  let nextBossAt = null;     // ms timestamp (Date.now based)
+  let running = true;
+  let bossFlashUntil = 0;
+  let nextBossAt = null;
 
   function saveNextBossAt(ts) {
     nextBossAt = ts;
@@ -107,7 +106,7 @@
     const s = totalSec % 60;
     const m = Math.floor(totalSec / 60) % 60;
     const h = Math.floor(totalSec / 3600);
-    const pad = (n) => String(n).padStart(2, "0");
+    const pad = n => String(n).padStart(2, "0");
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
   }
 
@@ -131,12 +130,9 @@
   }
 
   function fastForwardIfNeeded() {
-    // If nextBossAt is in the past, jump forward by 1h steps until it's in the future.
     if (nextBossAt == null) return;
     const now = Date.now();
     if (nextBossAt > now) return;
-
-    // Move forward enough cycles to be ahead of now (handles long offline)
     const diff = now - nextBossAt;
     const cycles = Math.floor(diff / FULL_CYCLE_MS) + 1;
     nextBossAt += cycles * FULL_CYCLE_MS;
@@ -166,26 +162,21 @@
     }
 
     NEXT.textContent = (nextBossAt == null)
-      ? "no sync saved (starts from 17:00)"
+      ? "no sync saved (starts from 00:38)"
       : ("next boss at: " + new Date(nextBossAt).toLocaleTimeString());
   }
 
   function onBossSpawn() {
-    // Boss happened -> schedule next in 1 hour
     bossFlashUntil = Date.now() + 3500;
     saveNextBossAt(Date.now() + FULL_CYCLE_MS);
   }
 
   function tick() {
     if (!running) return;
-
-    // Make sure saved nextBossAt is in future
     fastForwardIfNeeded();
-
     if (nextBossAt != null && Date.now() >= nextBossAt) {
       onBossSpawn();
     }
-
     updateUI();
   }
 
@@ -200,7 +191,6 @@
   }
 
   function setRemaining(ms) {
-    // Set "time left" from now and persist it.
     saveNextBossAt(Date.now() + Math.max(0, ms));
     updateUI();
   }
@@ -212,23 +202,20 @@
   }
 
   function calibrateBossSpawnNow() {
-    // You press this exactly when boss spawns: next boss = now + 1h
     bossFlashUntil = Date.now() + 3500;
     saveNextBossAt(Date.now() + FULL_CYCLE_MS);
     updateUI();
   }
 
   function syncToNextTopOfHour() {
-    // If boss spawns exactly at the top of each hour, this makes it correct immediately.
     const d = new Date();
-    d.setMinutes(0, 0, 0);          // this hour :00:00.000
+    d.setMinutes(0, 0, 0);
     const thisHour = d.getTime();
     const nextHour = thisHour + FULL_CYCLE_MS;
     saveNextBossAt(nextHour);
     updateUI();
   }
 
-  // ---- UI hookups ----
   startBtn.onclick = start;
   pauseBtn.onclick = pause;
   resetBtn.onclick = resetFull;
@@ -236,7 +223,7 @@
   setBtn.onclick = () => {
     const ms = parseTime(setInput.value);
     if (ms == null) {
-      STATUS.textContent = "Invalid time. Use mm:ss (17:00) or hh:mm:ss (1:00:00).";
+      STATUS.textContent = "Invalid time. Use mm:ss (00:38) or hh:mm:ss (1:00:00).";
       return;
     }
     setRemaining(ms);
@@ -247,24 +234,20 @@
 
   clearBtn.onclick = () => {
     clearSaved();
-    // fall back to default 17:00 starting point
     updateUI();
   };
 
-  // ---- Init ----
   const saved = loadNextBossAt();
   if (saved != null) {
     nextBossAt = saved;
     fastForwardIfNeeded();
   } else {
-    // no saved sync -> start from "17 minutes left" (non-persistent until you set/calibrate)
     nextBossAt = Date.now() + DEFAULT_REMAINING_MS;
-    saveNextBossAt(nextBossAt); // make it persistent immediately
+    saveNextBossAt(nextBossAt);
   }
 
-  // Run tick loop
   updateUI();
-  timerId = setInterval(tick, 200); // smooth enough, low CPU
+  setInterval(tick, 200);
 })();
 </script>
 </body>
